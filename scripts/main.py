@@ -101,7 +101,7 @@ def process_spectrum(fid_path, am_nm, ald_nm, save_path):
 
     # 5. Peak Picking
     peaks, _ = find_peaks(
-        spec_corrected, height=0.005 * np.max(spec_corrected), distance=zf_size // 200
+        spec_corrected, height=0.003 * np.max(spec_corrected), distance=zf_size // 200
     )
 
     # 6. Plotting
