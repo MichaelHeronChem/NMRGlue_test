@@ -3,34 +3,25 @@ import numpy as np
 import matplotlib.pyplot as plt
 import os
 import pandas as pd
-import re
 from scipy import sparse
 from scipy.sparse.linalg import spsolve
+from scipy.signal import find_peaks
 
-# ==============================
-# Setup Paths
-# ==============================
-# The script will now look for these dictionaries relative to itself
-dict_dir = "dictionaries"
-output_dir = "data/processed/nmr_images"
-os.makedirs(output_dir, exist_ok=True)
+# --- Configuration ---
+BASE_DIR = os.path.abspath("/nobackup/xtst45/NMRGlue_test")
+DATA_PATH = os.path.join(BASE_DIR, "data/raw/1_ald_3_am/PRESAT_01.fid")
+DICT_DIR = os.path.join(BASE_DIR, "dictionaries")
+ALDEHYDE_DICT = os.path.join(DICT_DIR, "aldehyde_dictionary.xlsx")
+AMINE_DICT = os.path.join(DICT_DIR, "amine_dictionary.xlsx")
+OUTPUT_DIR = os.path.join(BASE_DIR, "processed/nmr_images")
 
-# Try to load Dictionaries
-try:
-    ald_df = pd.read_excel(os.path.join(dict_dir, "aldehyde_dictionary.xlsx"))
-    am_df = pd.read_excel(os.path.join(dict_dir, "amine_dictionary.xlsx"))
-    ald_map = dict(zip(ald_df['Number'], ald_df['Name']))
-    am_map = dict(zip(am_df['Number'], am_df['Name']))
-except Exception as e:
-    print(f"Error loading dictionaries: {e}")
-    # Fallback placeholders so the script doesn't crash
-    ald_map, am_map = {}, {}
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# ==============================
-# Processing Functions
-# ==============================
+
+# --- Helper Functions ---
 def next_power_of_2(x):
     return 1 << (x - 1).bit_length()
+
 
 def baseline_als(y, lam=1e6, p=0.001, niter=10):
     L = len(y)
@@ -38,75 +29,124 @@ def baseline_als(y, lam=1e6, p=0.001, niter=10):
     w = np.ones(L)
     for _ in range(niter):
         W = sparse.spdiags(w, 0, L, L)
-        Z = W + lam * D.dot(D.T)
+        Z = W + lam * (D @ D.T)
         z = spsolve(Z, w * y)
         w = p * (y > z) + (1 - p) * (y < z)
     return z
 
-# ==============================
-# Search and Process Loop
-# ==============================
-print("Searching for NMR data folders...")
-found_data = False
 
-# We walk through the entire current directory and subdirectories
-for root, dirs, files in os.walk("."):
-    for d in dirs:
-        if d == "PRESAT_01.fid":
-            found_data = True
-            actual_fid_path = os.path.join(root, d)
-            
-            # The parent folder (e.g., 1_ald_1_am.fid) contains the IDs
-            parent_folder = os.path.basename(root)
-            
-            # Extract IDs using regex
-            match = re.search(r'(\d+)_ald_(\d+)_am', parent_folder, re.IGNORECASE)
-            
-            if match:
-                ald_id = int(match.group(1))
-                am_id = int(match.group(2))
-                
-                aldehyde_name = ald_map.get(ald_id, f"Aldehyde_{ald_id}")
-                amine_name = am_map.get(am_id, f"Amine_{am_id}")
-                
-                plot_filename = f"{amine_name.replace(' ', '_')}_{aldehyde_name.replace(' ', '_')}.png"
-                
-                print(f"Found match: {parent_folder} -> {plot_filename}")
-                
-                try:
-                    # NMR Processing
-                    dic, data = ng.varian.read(actual_fid_path)
-                    data = np.asarray(data).ravel()
-                    
-                    zf_size = next_power_of_2(data.size * 2)
-                    data_zf = ng.proc_base.zf_size(data, zf_size)
-                    spec = ng.proc_base.fft(data_zf)
-                    spec /= spec.size
-                    spec = ng.proc_base.ps(spec, p0=0.0, p1=0.0)
-                    spec_real = np.real(spec).ravel()
+def get_compound_names(folder_name, ald_path, am_path):
+    try:
+        parts = folder_name.split("_")
+        ald_id, am_id = int(parts[0]), int(parts[2])
+        df_ald = pd.read_excel(ald_path)
+        df_am = pd.read_excel(am_path)
+        ald_name = (
+            str(df_ald.loc[df_ald["Number"] == ald_id, "Name"].values[0])
+            .strip()
+            .replace(" ", "_")
+        )
+        am_name = (
+            str(df_am.loc[df_am["Number"] == am_id, "Name"].values[0])
+            .strip()
+            .replace(" ", "_")
+        )
+        return am_name, ald_name
+    except:
+        return "UnknownAmine", "UnknownAldehyde"
 
-                    spec_plot = spec_real[:30000]
-                    baseline = baseline_als(spec_plot, lam=1e6, p=0.001)
-                    spec_corrected = spec_plot - baseline
 
-                    # Plotting
-                    plt.figure(figsize=(15, 8))
-                    plt.plot(spec_corrected, linewidth=0.8, color='black')
-                    plt.xlim(0, 30000)
-                    ymax = np.max(np.abs(spec_corrected))
-                    plt.ylim(-0.05 * ymax, 1.1 * ymax)
-                    plt.title(f"{amine_name} and {aldehyde_name} NMR")
-                    
-                    # Save
-                    outfile = os.path.join(output_dir, plot_filename)
-                    plt.savefig(outfile, dpi=300)
-                    plt.close()
-                    print(f"Successfully saved: {outfile}")
-                    
-                except Exception as e:
-                    print(f"Error processing {actual_fid_path}: {e}")
-            else:
-                print(f"Found PRESAT_01.fid in {root}, but parent folder name didn't match ID pattern.")
+# --- Main Execution ---
+parent_folder = os.path.basename(os.path.dirname(DATA_PATH))
+am_nm, ald_nm = get_compound_names(parent_folder, ALDEHYDE_DICT, AMINE_DICT)
+full_save_path = os.path.join(OUTPUT_DIR, f"{am_nm}_{ald_nm}.png")
 
-if not found_data:
-    print("No folders named 'PRESAT_01.fid' were found in the current directory or its subfolders.")
+dic, data = ng.varian.read(DATA_PATH)
+data = np.asarray(data).ravel()
+
+# Process FID
+zf_size = next_power_of_2(data.size * 2)
+data_zf = ng.proc_base.zf_size(data, zf_size)
+spec = ng.proc_base.fft(data_zf)
+spec /= spec.size
+spec_real = np.real(spec).ravel()
+
+# Baseline correction
+spec_corrected = spec_real - baseline_als(spec_real)
+
+# --- Calibration ---
+obs_mhz = float(dic["procpar"]["sreffrq"]["values"][0])
+if obs_mhz < 300:
+    obs_mhz = 600.0
+sw_hz = float(dic["procpar"]["sw"]["values"][0])
+
+freq_hz = np.linspace(sw_hz / 2, -sw_hz / 2, zf_size)
+ppm_scale = freq_hz / obs_mhz
+
+# Step 1: Reference to 1.98 (Centering)
+max_idx = np.argmax(spec_corrected)
+offset = 1.98 - ppm_scale[max_idx]
+ppm_scale += offset
+
+# --- Step 2: Gaussian Solvent Suppression ---
+# Instead of zeroing, we multiply the region by an inverted Gaussian
+center = 1.98
+fwhm = 0.5  # Width of suppression in ppm
+sigma = fwhm / (2 * np.sqrt(2 * np.log(2)))
+
+# Calculate the suppression mask (1.0 everywhere, dipping to near 0 at 1.98)
+# We use a depth factor (e.g., 0.01) to ensure the peak is heavily attenuated
+suppression_depth = 0.005
+gaussian_bell = np.exp(-((ppm_scale - center) ** 2) / (2 * sigma**2))
+suppression_mask = 1 - (1 - suppression_depth) * gaussian_bell
+
+spec_corrected = spec_corrected * suppression_mask
+
+# --- Peak Picking ---
+height_thresh = 0.03 * np.max(spec_corrected)
+peaks, _ = find_peaks(spec_corrected, height=height_thresh, distance=zf_size // 200)
+
+# --- Plotting ---
+plt.figure(figsize=(18, 10))
+plt.plot(ppm_scale, spec_corrected, color="black", linewidth=0.7)
+
+# Label remaining peaks
+ymax_global = np.max(spec_corrected)
+for p in peaks:
+    peak_ppm = ppm_scale[p]
+    peak_height = spec_corrected[p]
+    if -0.5 <= peak_ppm <= 14:
+        # Ignore labeling anything very close to the solvent center
+        if abs(peak_ppm - 1.98) > 0.1:
+            plt.text(
+                peak_ppm,
+                peak_height + (0.01 * ymax_global),
+                f"{peak_ppm:.2f}",
+                rotation=90,
+                ha="center",
+                va="bottom",
+                fontsize=8,
+                color="darkred",
+                weight="bold",
+            )
+
+plt.gca().invert_xaxis()
+plt.xlim(14, -0.5)
+
+# Scaling mask
+mask_plot = (ppm_scale <= 14) & (ppm_scale >= -0.5)
+if any(mask_plot):
+    ymax_visible = np.max(spec_corrected[mask_plot])
+    plt.ylim(-0.05 * ymax_visible, 1.3 * ymax_visible)
+
+plt.xlabel(r"Chemical Shift ($\delta$, ppm)", fontsize=14)
+plt.ylabel("Intensity", fontsize=14)
+plt.title(
+    f"NMR Analysis (Gaussian Solvent Suppression): {am_nm} + {ald_nm}", fontsize=16
+)
+plt.grid(True, alpha=0.1, linestyle="--")
+
+plt.savefig(full_save_path, dpi=300, bbox_inches="tight")
+plt.close()
+
+print(f"Success! Final image saved to: {full_save_path}")
