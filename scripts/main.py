@@ -13,7 +13,7 @@ DATA_PATH = os.path.join(BASE_DIR, "data/raw/1_ald_3_am/PRESAT_01.fid")
 DICT_DIR = os.path.join(BASE_DIR, "dictionaries")
 ALDEHYDE_DICT = os.path.join(DICT_DIR, "aldehyde_dictionary.xlsx")
 AMINE_DICT = os.path.join(DICT_DIR, "amine_dictionary.xlsx")
-OUTPUT_DIR = os.path.join(BASE_DIR, "processed/nmr_images")
+OUTPUT_DIR = os.path.join(BASE_DIR, "data/processed/nmr_images")
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
