@@ -104,32 +104,45 @@ def process_spectrum(fid_path, am_nm, ald_nm, save_path):
         spec_corrected, height=0.003 * np.max(spec_corrected), distance=zf_size // 200
     )
 
-    # 6. Plotting
-    plt.figure(figsize=(18, 10))
-    plt.plot(ppm_scale, spec_corrected, color="black", linewidth=0.7)
+    # 7. Enhanced High-Resolution Plotting
+    # We use a very wide figure (24 inches) to prevent horizontal "squashing"
+    plt.figure(figsize=(12, 5))
 
-    ymax = np.max(spec_corrected)
+    # Use a very thin linewidth (0.4) so multiplets are visible
+    plt.plot(ppm_scale, spec_corrected, color="black", linewidth=0.4, antialiased=True)
+
+    ymax_global = np.max(spec_corrected)
     for p in peaks:
-        if -0.5 <= ppm_scale[p] <= 14 and abs(ppm_scale[p] - 1.98) > 0.15:
+        peak_ppm = ppm_scale[p]
+        peak_height = spec_corrected[p]
+        # Only label peaks in range, avoiding the solvent area
+        if -0.5 <= peak_ppm <= 14 and abs(peak_ppm - 1.98) > 0.15:
             plt.text(
-                ppm_scale[p],
-                spec_corrected[p] + (0.01 * ymax),
-                f"{ppm_scale[p]:.2f}",
+                peak_ppm,
+                peak_height + (0.01 * ymax_global),
+                f"{peak_ppm:.2f}",
                 rotation=90,
                 ha="center",
-                fontsize=8,
+                va="bottom",
+                fontsize=7,
                 color="darkred",
-                weight="bold",
             )
 
     plt.gca().invert_xaxis()
     plt.xlim(14, -0.5)
 
-    mask = (ppm_scale <= 14) & (ppm_scale >= -0.5)
-    plt.ylim(-0.05 * np.max(spec_corrected[mask]), 1.3 * np.max(spec_corrected[mask]))
+    # Set Y-axis with enough headroom for the tall labels
+    mask_plot = (ppm_scale <= 14) & (ppm_scale >= -0.5)
+    if any(mask_plot):
+        ymax_visible = np.max(spec_corrected[mask_plot])
+        plt.ylim(-0.02 * ymax_visible, 1.4 * ymax_visible)
 
-    plt.title(f"NMR Analysis: {am_nm} + {ald_nm}", fontsize=16)
-    plt.savefig(save_path, dpi=300, bbox_inches="tight")
+    plt.xlabel(r"Chemical Shift ($\delta$, ppm)", fontsize=12)
+    plt.ylabel("Intensity", fontsize=12)
+    plt.title(f"High-Res NMR Analysis: {am_nm} + {ald_nm}", fontsize=14)
+
+    # Save with high DPI (600) for "zoom-in" capability
+    plt.savefig(save_path, dpi=600, bbox_inches="tight")
     plt.close()
 
 
