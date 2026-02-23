@@ -1,36 +1,72 @@
 import os
 import glob
+import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 import nmrglue as ng
+import re
 
 # =============================================================================
 # CONFIGURATION PARAMETERS
 # =============================================================================
 RAW_DATA_DIR = "data/raw"
 PROCESSED_DATA_DIR = "data/processed"
+PNG_DIR = os.path.join(PROCESSED_DATA_DIR, "png")
+SVG_DIR = os.path.join(PROCESSED_DATA_DIR, "svg")
 
-# Processing Toggles
-APPLY_PHASING = False
-APPLY_BASELINE = False
-APPLY_SUPPRESSION = False
-PLOT_IN_PPM = True  # Changed to True for standard NMR visualization
+DICT_DIR = "dictionaries"
+AMINE_DICT_PATH = os.path.join(DICT_DIR, "amine_dictionary.tsv")
+ALDEHYDE_DICT_PATH = os.path.join(DICT_DIR, "aldehyde_dictionary.tsv")
 
-# Visual Parameters
 LINE_WIDTH = 0.5
 PNG_DPI = 300
-Y_UPPER_BUFFER = 1.2  # 1.2x the max peak
-Y_LOWER_BUFFER = -1.0  # 10% below baseline for visual clarity
-
-# Target ppm for the Acetonitrile solvent peak
+Y_UPPER_BUFFER = 1.2
+Y_LOWER_BUFFER = -0.5
 SOLVENT_PPM = 1.98
-
-# Processing Parameters
 LINE_BROADENING = 0.5
 
 # =============================================================================
-# HELPER FUNCTIONS
+# DICTIONARY LOADING & CLEANING
+# =============================================================================
+
+
+def sanitize_filename(name):
+    """Removes characters that are illegal or problematic in filenames."""
+    # Replace commas and brackets with dashes, spaces with underscores
+    name = (
+        str(name).replace(",", "-").replace("[", "").replace("]", "").replace(" ", "_")
+    )
+    # Remove anything else that isn't alphanumeric, dash, or underscore
+    return re.sub(r"(?u)[^-\w.]", "", name)
+
+
+def load_dicts():
+    amine_map = {}
+    ald_map = {}
+
+    try:
+        # Added r"\s+" to fix SyntaxWarning and .strip() to fix lookup misses
+        if os.path.exists(AMINE_DICT_PATH):
+            df = pd.read_csv(AMINE_DICT_PATH, sep=r"\s+", engine="python")
+            amine_map = {
+                str(k).strip(): str(v).strip() for k, v in zip(df["Number"], df["Name"])
+            }
+
+        if os.path.exists(ALDEHYDE_DICT_PATH):
+            df = pd.read_csv(ALDEHYDE_DICT_PATH, sep=r"\s+", engine="python")
+            ald_map = {
+                str(k).strip(): str(v).strip() for k, v in zip(df["Number"], df["Name"])
+            }
+
+    except Exception as e:
+        print(f"Error loading dictionaries: {e}")
+
+    return amine_map, ald_map
+
+
+# =============================================================================
+# NMR PROCESSING FUNCTIONS
 # =============================================================================
 
 
@@ -38,9 +74,7 @@ def process_fid(dic, data):
     data = np.asarray(data).ravel()
     if LINE_BROADENING > 0:
         sw = float(dic["procpar"]["sw"]["values"][0])
-        # nmrglue em uses Hz/sw for lb
         data = ng.process.proc_base.em(data, lb=LINE_BROADENING / sw)
-
     zf_size = 1 << (data.size * 2).bit_length()
     data = ng.process.proc_base.zf_size(data, zf_size)
     data = ng.process.proc_base.fft(data)
@@ -63,86 +97,80 @@ def find_ppm_shift(scout_dir):
     dic, data = ng.varian.read(scout_dir)
     dic, data = process_fid(dic, data)
     ppm_scale, _, _ = get_ppm_scale(dic, data)
-    # Solvent peak is usually the largest in un-suppressed scout scans
     max_index = np.argmax(np.abs(data))
     return SOLVENT_PPM - ppm_scale[max_index]
 
 
 # =============================================================================
-# MAIN PROCESSING LOOP
+# MAIN
 # =============================================================================
 
 
 def main():
-    os.makedirs(PROCESSED_DATA_DIR, exist_ok=True)
+    os.makedirs(PNG_DIR, exist_ok=True)
+    os.makedirs(SVG_DIR, exist_ok=True)
+
+    amine_lookup, ald_lookup = load_dicts()
     sample_folders = glob.glob(os.path.join(RAW_DATA_DIR, "*_am_*_ald"))
 
     for folder in sample_folders:
-        sample_name = os.path.basename(folder)
-        print(f"\nProcessing Sample: {sample_name}")
+        folder_name = os.path.basename(folder)
+
+        try:
+            parts = folder_name.split("_")
+            amine_id = parts[0].strip()
+            ald_id = parts[2].strip()
+
+            # Map names and sanitize for file system
+            amine_raw = amine_lookup.get(amine_id, f"Amine-{amine_id}")
+            ald_raw = ald_lookup.get(ald_id, f"Aldehyde-{ald_id}")
+
+            amine_clean = sanitize_filename(amine_raw)
+            ald_clean = sanitize_filename(ald_raw)
+            clean_filename = f"{amine_clean}_{ald_clean}"
+
+        except Exception:
+            clean_filename = folder_name
+            amine_raw, ald_raw = "Unknown", "Unknown"
+
+        print(f"Processing: {folder_name} -> {clean_filename}")
 
         presat_dir = os.path.join(folder, "PRESAT_01.fid")
         scout_dir = os.path.join(folder, "scoutfids", "PRESAT_01_Scout1D.fid")
 
-        if not os.path.exists(presat_dir) or not os.path.exists(scout_dir):
-            print(f"  -> Skipping: Missing .fid directories")
+        if not (os.path.exists(presat_dir) and os.path.exists(scout_dir)):
             continue
 
         try:
-            # 1. Determine shift from Scout
             ppm_shift = find_ppm_shift(scout_dir)
-
-            # 2. Process Presat Data
             dic, data = ng.varian.read(presat_dir)
             dic, data = process_fid(dic, data)
             ppm_scale, _, _ = get_ppm_scale(dic, data)
             ppm_scale += ppm_shift
-
-            # Extract real part for plotting
             final_data = np.real(data)
 
-            # --- DYNAMIC Y-AXIS CALCULATION ---
-            # Find the highest peak in the visible real spectrum
-            max_val = np.max(final_data)
-            dynamic_ymax = max_val * Y_UPPER_BUFFER
-            dynamic_ymin = max_val * Y_LOWER_BUFFER
-
-            # --- PLOTTING LOGIC ---
             fig, ax = plt.subplots(figsize=(12, 6))
+            ax.plot(ppm_scale, final_data, color="black", linewidth=LINE_WIDTH)
+            ax.set_xlim(14.0, -0.5)
+            ax.set_ylim(
+                np.max(final_data) * Y_LOWER_BUFFER, np.max(final_data) * Y_UPPER_BUFFER
+            )
 
-            color = "black" if PLOT_IN_PPM else "blue"
-            if PLOT_IN_PPM:
-                ax.plot(ppm_scale, final_data, color=color, linewidth=LINE_WIDTH)
-                ax.set_xlim(14.0, -0.5)  # Standard 1H NMR range
-                ax.set_xlabel("Chemical Shift (ppm)", fontweight="bold")
-            else:
-                ax.plot(final_data, color=color, linewidth=LINE_WIDTH)
-                ax.set_xlabel("Data Points (Array Index)", fontweight="bold")
-
-            # --- APPLY DYNAMIC LIMITS ---
-            ax.set_ylim(dynamic_ymin, dynamic_ymax)
+            ax.set_xlabel("Chemical Shift (ppm)", fontweight="bold")
             ax.set_ylabel("Intensity (a.u.)", fontweight="bold")
-
-            # Formatter handles scientific notation for high intensities
             ax.yaxis.set_major_formatter(ticker.ScalarFormatter(useMathText=True))
             ax.ticklabel_format(style="sci", axis="y", scilimits=(-2, 2))
+            ax.get_yaxis().set_visible(False)
 
-            ax.yaxis.set_minor_locator(ticker.AutoMinorLocator())
-            ax.xaxis.set_minor_locator(ticker.AutoMinorLocator())
-
-            ax.set_title(f"PRESAT Spectrum: {sample_name} (Auto-Scaled Y)", fontsize=14)
+            # Title can keep the commas for readability
             plt.tight_layout()
 
-            # Save SVG and PNG
-            out_base = os.path.join(PROCESSED_DATA_DIR, f"{sample_name}_processed")
-            plt.savefig(f"{out_base}.svg", format="svg")
-            plt.savefig(f"{out_base}.png", dpi=PNG_DPI)
-
+            plt.savefig(os.path.join(SVG_DIR, f"{clean_filename}.svg"), format="svg")
+            plt.savefig(os.path.join(PNG_DIR, f"{clean_filename}.png"), dpi=PNG_DPI)
             plt.close(fig)
-            print(f"  -> Exported: Peak Max {max_val:.2e} | Y-Limit {dynamic_ymax:.2e}")
 
         except Exception as e:
-            print(f"  -> Error processing {sample_name}: {e}")
+            print(f"  -> Error: {e}")
 
 
 if __name__ == "__main__":
