@@ -55,6 +55,7 @@ def get_pure_aldehyde_peak(ppm, data):
     2. If none, look in 10.5 to 11.5 ppm.
     3. If none, look below 9.5 ppm (down to 8.5 ppm).
     Inside the successful tier, the peak closest to 10.0 ppm is selected.
+    Threshold lowered to 1% of region max for higher sensitivity.
     """
     region_max = get_region_max(ppm, data)
     
@@ -72,8 +73,8 @@ def get_pure_aldehyde_peak(ppm, data):
             continue
             
         sub_data = data[valid_indices]
-        # Find peaks meeting significance criteria
-        peaks, _ = find_peaks(sub_data, height=0.05 * region_max, prominence=0.02 * region_max)
+        # Lowered height to 0.01 (1%) to ensure small aldehyde signals are captured
+        peaks, _ = find_peaks(sub_data, height=0.01 * region_max, prominence=0.01 * region_max)
         
         if len(peaks) > 0:
             peak_ppms = ppm[valid_indices[peaks]]
@@ -86,7 +87,7 @@ def get_pure_aldehyde_peak(ppm, data):
     valid_indices = np.where(mask_all)[0]
     if len(valid_indices) > 0:
         local_max_idx = valid_indices[np.argmax(data[valid_indices])]
-        if data[local_max_idx] > 0.05 * region_max:
+        if data[local_max_idx] > 0.01 * region_max:
             return ppm[local_max_idx]
             
     return None
@@ -105,12 +106,12 @@ def check_peak_presence(target_ppm, sm_tuple, tol=0.2):
     sub_data = data[valid_indices]
     region_max = get_region_max(ppm, data)
     
-    peaks, _ = find_peaks(sub_data, height=0.005 * region_max, prominence=0.002 * region_max)
+    peaks, _ = find_peaks(sub_data, height=0.01 * region_max, prominence=0.002 * region_max)
     if len(peaks) > 0:
         return True
         
     local_max = np.max(sub_data)
-    if local_max > 0.005 * region_max:
+    if local_max > 0.01 * region_max:
         return True
         
     return False
@@ -127,6 +128,7 @@ def find_reaction_peaks(rxn_ppm, rxn_data, pure_ald_tuple, pure_amine_tuple):
         
     rxn_ald_ppm = None
     if pure_ald_ppm is not None:
+        # Should show up in reaction spectra +/- 0.2 ppm
         mask = (rxn_ppm >= pure_ald_ppm - 0.2) & (rxn_ppm <= pure_ald_ppm + 0.2)
         valid_indices = np.where(mask)[0]
         if len(valid_indices) > 0:
@@ -144,7 +146,7 @@ def find_reaction_peaks(rxn_ppm, rxn_data, pure_ald_tuple, pure_amine_tuple):
         if len(valid_indices) > 0:
             sub_data = rxn_data[valid_indices]
             region_max = get_region_max(rxn_ppm, rxn_data)
-            peaks, _ = find_peaks(sub_data, height=0.005 * region_max, prominence=0.002 * region_max)
+            peaks, _ = find_peaks(sub_data, height=0.01 * region_max, prominence=0.002 * region_max)
             
             if len(peaks) > 0:
                 peak_ppms = rxn_ppm[valid_indices[peaks]]
@@ -251,21 +253,29 @@ def process_block(block_path, processed_amines_cache, processed_aldehydes_cache)
             ax.plot(ppm, plotted_data, label=label, linewidth=0.3, color="black")
             
             if label == "Reaction":
+                # Adjusted so symbol and label move up together for better visibility
                 if peak_labels["aldehyde"]:
                     a_ppm = peak_labels["aldehyde"]
                     idx = np.abs(ppm - a_ppm).argmin()
-                    ax.plot(ppm[idx], plotted_data[idx], marker='*', color='blue', markersize=8)
-                    ax.text(ppm[idx], plotted_data[idx] + (offset_step * 0.08), f"{a_ppm:.2f}", color='blue', fontsize=9, ha='center')
+                    # Move the marker up by a small fraction of the offset
+                    marker_y = plotted_data[idx] + (offset_step * 0.05)
+                    ax.plot(ppm[idx], marker_y, marker='*', color='blue', markersize=8)
+                    # Label stays relative to the shifted marker
+                    ax.text(ppm[idx], marker_y + (offset_step * 0.10), f"{a_ppm:.2f}", color='blue', fontsize=9, ha='center', va='bottom')
+                
                 if peak_labels["imine"]:
                     i_ppm = peak_labels["imine"]
                     idx = np.abs(ppm - i_ppm).argmin()
-                    ax.plot(ppm[idx], plotted_data[idx], marker='^', color='green', markersize=7)
-                    ax.text(ppm[idx], plotted_data[idx] + (offset_step * 0.08), f"{i_ppm:.2f}", color='green', fontsize=9, ha='center')
+                    # Move the marker up by a small fraction of the offset
+                    marker_y = plotted_data[idx] + (offset_step * 0.05)
+                    ax.plot(ppm[idx], marker_y, marker='^', color='green', markersize=7)
+                    # Label stays relative to the shifted marker
+                    ax.text(ppm[idx], marker_y + (offset_step * 0.10), f"{i_ppm:.2f}", color='green', fontsize=9, ha='center', va='bottom')
 
             y_offset -= offset_step
 
         ax.set_xlim(plot_x_max, plot_x_min)
-        ax.set_ylim(min_y - 0.1 * offset_step, max_y + 0.1 * offset_step)
+        ax.set_ylim(min_y - 0.1 * offset_step, max_y + 0.25 * offset_step) # Increased top limit for extra clearance
         ax.set_xlabel("Chemical Shift (ppm)")
         ax.set_ylabel("Normalized Intensity" if getattr(config, "NORMALIZE_SPECTRA", True) else "Intensity (a.u.)")
         ax.set_title(f"Imine Formation: {folder_name} ({block_name})")
@@ -284,7 +294,7 @@ def main():
         print(f"Reaction directory {REACTION_BASE_DIR} not found.")
         return
 
-    # Look for folders starting with 'block_' inside 'data/raw/reaction/'
+    # Look for folders starting with 'Block_' inside 'data/raw/reaction/'
     block_folders = [d for d in REACTION_BASE_DIR.iterdir() if d.is_dir() and d.name.startswith("Block_")]
     
     if not block_folders:
